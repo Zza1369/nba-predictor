@@ -2,15 +2,21 @@ import os
 import requests
 import pandas as pd
 from datetime import datetime
-from nba_api.stats.endpoints import leaguedashteamstats
-from nba_api.stats.static import teams
 
 FIXTURES_CSV = "nba_fixtures.csv"
+
+# 转换球队简称为 ESPN 的 ID
+TEAM_IDS = {
+    "ATL": 1, "BOS": 2, "NOP": 3, "CHI": 4, "CLE": 5, "DAL": 6, "DEN": 7, "DET": 8, 
+    "GSW": 9, "HOU": 10, "IND": 11, "LAC": 12, "LAL": 13, "MIA": 14, "MIL": 15, "MIN": 16, 
+    "BKN": 17, "NYK": 18, "ORL": 19, "PHI": 20, "PHX": 21, "POR": 22, "SAC": 23, "SAS": 24, 
+    "OKC": 25, "UTA": 26, "WAS": 27, "TOR": 28, "MEM": 29
+}
 
 def push_to_wechat(md_text):
     key = os.environ.get("SERVERCHAN_KEY")
     if not key:
-        print("⚠️ 未配置 SERVERCHAN_KEY，跳过微信推送")
+        print("⚠️ 未配置 SERVERCHAN_KEY")
         return
     print("正在推送到微信...")
     try:
@@ -19,60 +25,69 @@ def push_to_wechat(md_text):
     except Exception as e:
         print(f"❌ 微信推送异常: {e}")
 
-def main():
-    print("正在从 NBA 官方拉取本赛季数据...")
+def get_team_stat(team_abbr):
+    """从 ESPN 免费接口获取球队的场均得分、场均失分、节奏"""
+    team_id = TEAM_IDS.get(team_abbr.upper())
+    if not team_id: return None
+    
+    # 获取球队基础数据
+    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/statistics"
     try:
-        stats = leaguedashteamstats.LeagueDashTeamStats(
-            season='2025-26', 
-            measure_type_detailed_defense='Advanced',
-            league_id_nullable='00', 
-            team_id_nullable='0'
-        )
-        df = stats.get_data_frames()[0][['TEAM_NAME', 'OFF_RATING', 'DEF_RATING', 'PACE']]
+        r = requests.get(url, timeout=15)
+        data = r.json()
         
-        all_teams = teams.get_teams()
-        abbr_to_name = {t['abbreviation']: t['full_name'] for t in all_teams}
+        # ESPN 的数据藏在很深的字典里，我们提取“场均得分”、“场均失分”作为替代指标
+        stats = data.get("results", {}).get("stats", {}).get("splits", {}).get("categories", [])
+        
+        ppg = 110.0 # 默认联盟平均分
+        opp_ppg = 110.0
+        pace = 100.0
+        
+        for category in stats:
+            if category.get("name") == "offensive":
+                for stat in category.get("stats", []):
+                    if stat.get("name") == "avgPoints": ppg = float(stat.get("value"))
+                    if stat.get("name") == "avgPossessions": pace = float(stat.get("value"))
+            if category.get("name") == "defensive":
+                for stat in category.get("stats", []):
+                    if stat.get("name") == "avgPoints": opp_ppg = float(stat.get("value"))
+                    
+        return {"name": data.get("team", {}).get("displayName"), "ppg": ppg, "opp_ppg": opp_ppg, "pace": pace}
     except Exception as e:
-        print(f"❌ 拉取 NBA 数据失败: {e}")
-        return
+        print(f"拉取 {team_abbr} 数据失败: {e}")
+        return None
 
-    # 读取赛程表
+def main():
     try:
         fixtures = pd.read_csv(FIXTURES_CSV, encoding="utf-8-sig")
-    except FileNotFoundError:
-        print(f"❌ 找不到 {FIXTURES_CSV}，请检查文件是否存在。")
+    except:
+        print("找不到 nba_fixtures.csv")
         return
 
     md = f"🏀 NBA 量化预测 ({datetime.now().strftime('%m-%d')})\n\n"
-    league_avg_ortg = df['OFF_RATING'].mean()
-    league_avg_pace = df['PACE'].mean()
+    
+    # 联盟平均进攻水平（可以粗略用 114.5 代替，或者动态算）
+    league_avg_ppg = 114.5
 
     for _, row in fixtures.iterrows():
-        home_abbr = str(row['home']).strip()
-        away_abbr = str(row['away']).strip()
+        home_abbr = str(row['home']).strip().upper()
+        away_abbr = str(row['away']).strip().upper()
         
-        home_name = abbr_to_name.get(home_abbr)
-        away_name = abbr_to_name.get(away_abbr)
+        home_stats = get_team_stat(home_abbr)
+        away_stats = get_team_stat(away_abbr)
 
-        if not home_name or not away_name:
-            md += f"⚠️ 找不到球队缩写: {home_abbr} 或 {away_abbr}\n\n"
+        if not home_stats or not away_stats:
+            md += f"⚠️ 获取 {home_abbr} 或 {away_abbr} 数据失败\n\n"
             continue
 
-        try:
-            home_stats = df[df['TEAM_NAME'] == home_name].iloc[0]
-            away_stats = df[df['TEAM_NAME'] == away_name].iloc[0]
-        except IndexError:
-            md += f"⚠️ 数据库中暂无 {home_abbr} 或 {away_abbr} 的赛季数据\n\n"
-            continue
-
-        # 核心算法：预期得分
-        pace_avg = (home_stats['PACE'] + away_stats['PACE']) / 2
-        home_expected = (home_stats['OFF_RATING'] * away_stats['DEF_RATING'] / league_avg_ortg) * (pace_avg / league_avg_pace) + 2.5
-        away_expected = (away_stats['OFF_RATING'] * home_stats['DEF_RATING'] / league_avg_ortg) * (pace_avg / league_avg_pace) - 2.5
+        # 计算预期得分 (结合了进攻、防守和节奏)
+        pace_avg = (home_stats['pace'] + away_stats['pace']) / 2
+        
+        home_expected = (home_stats['ppg'] * (away_stats['opp_ppg'] / league_avg_ppg)) * (pace_avg / 100) + 2.5
+        away_expected = (away_stats['ppg'] * (home_stats['opp_ppg'] / league_avg_ppg)) * (pace_avg / 100) - 2.5
 
         spread = home_expected - away_expected
         total = home_expected + away_expected
-        
         spread_team = home_abbr if spread > 0 else away_abbr
 
         md += f"【{home_abbr}(主) vs {away_abbr}(客)】\n"

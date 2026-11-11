@@ -97,7 +97,6 @@ def get_performance_report():
                     act_win = "H" if act_h > act_a else "A"
                     win_ok = (pred_win == act_win)
                     
-                    # 简单以 225 分为基准判断大小球对错
                     pred_total = pred_h + pred_a
                     act_total = act_h + act_a
                     ou_ok = ((pred_total > 225 and act_total > 225) or (pred_total < 225 and act_total < 225))
@@ -155,10 +154,17 @@ def main():
         spread = home_expected - away_expected
         total = home_expected + away_expected
 
+        # === 核心概率计算 ===
         home_win_prob = 1 - norm.cdf(0, loc=spread, scale=STD_DEV_SPREAD)
         away_win_prob = 1 - home_win_prob
         over_prob = 1 - norm.cdf(MARKET_TOTAL_LINE, loc=total, scale=STD_DEV_TOTAL)
         
+        # === 恢复胜分差区间计算 ===
+        abs_spread = abs(spread)
+        prob_1_5 = norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(0, loc=abs_spread, scale=STD_DEV_SPREAD)
+        prob_6_10 = norm.cdf(10, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD)
+        prob_11_15 = norm.cdf(15, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(10, loc=abs_spread, scale=STD_DEV_SPREAD)
+
         win_team = home['name'] if spread > 0 else away['name']
 
         md += f"【{home['name']}(主) vs {away['name']}(客)】\n"
@@ -169,24 +175,22 @@ def main():
         else:
             md += f"⚖️ 理论让分：{win_team} -{abs(spread):.1f}\n"
             
-        md += f"📈 理论大小：{total:.1f} 分\n"
+        md += f"📈 理论大小：{total:.1f} 分 (基准 {MARKET_TOTAL_LINE})\n"
         md += f"🎯 胜负概率：主胜 {home_win_prob:.1%} | 客胜 {away_win_prob:.1%}\n"
-        md += f"📈 大小概率：大分 {over_prob:.1%} | 小分 {1-over_prob:.1%}\n\n"
+        md += f"📈 大小概率：大分 {over_prob:.1%} | 小分 {1-over_prob:.1%}\n"
+        md += f"🔮 分差区间：{win_team}赢 1-5分({prob_1_5:.1%}) | 6-10分({prob_6_10:.1%}) | 11-15分({prob_11_15:.1%})\n\n"
 
         results_to_save.append({
             "home": home_abbr, "away": away_abbr,
             "pred_h": home_expected, "pred_a": away_expected
         })
 
-    # 1. 保存预测记录，供以后复盘
     if results_to_save:
         pd.DataFrame(results_to_save).to_csv(f"nba_predictions_{today_str}.csv", index=False, encoding="utf-8-sig")
 
-    # 2. 追加复盘报告
     md += "-------------------\n"
     md += get_performance_report()
 
-    # 3. 推送
     push_to_wechat(md)
 
 if __name__ == "__main__":

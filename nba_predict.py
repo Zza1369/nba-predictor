@@ -51,7 +51,7 @@ def get_team_stat(team_abbr):
         return None
 
 def get_actual_results(date_str):
-    """拉取指定日期的完赛赛果（修复了 0-0 的 Bug）"""
+    """拉取指定日期的完赛赛果（过滤未打完的 0-0）"""
     fmt_date = date_str.replace("-", "")
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={fmt_date}"
     results = {}
@@ -61,7 +61,7 @@ def get_actual_results(date_str):
         for ev in events:
             comp = ev.get("competitions", [])[0]
             
-            # 核心修复：必须判断比赛状态是不是已经完赛
+            # 核心判断：必须完赛
             status = comp.get("status", {})
             if not status.get("type", {}).get("completed", False):
                 continue
@@ -81,7 +81,7 @@ def get_actual_results(date_str):
     return results
 
 def get_performance_report():
-    """生成 NBA 历史战绩（修复了日期错位问题）"""
+    """生成 NBA 历史战绩（跨日回溯）"""
     pred_files = sorted(glob.glob("nba_predictions_*.csv"))
     if not pred_files:
         return "📊 历史战绩：暂无记录 (等待第一场比赛结算)\n"
@@ -96,7 +96,6 @@ def get_performance_report():
             pred_date = datetime.strptime(date_str, "%Y-%m-%d")
             df = pd.read_csv(f, encoding="utf-8-sig")
             
-            # 核心修复：同时拉取预测日期、后1天、后2天的赛果（兼容时差）
             actuals = {}
             for i in range(3):
                 check_date = (pred_date + timedelta(days=i)).strftime("%Y-%m-%d")
@@ -106,7 +105,6 @@ def get_performance_report():
                 h, a = row["home"], row["away"]
                 key = f"{h}||{a}"
                 
-                # 防止重复结算
                 match_uid = f"{date_str}_{key}"
                 if match_uid in seen_matches: continue
 
@@ -177,10 +175,19 @@ def main():
         spread = home_expected - away_expected
         total = home_expected + away_expected
 
+        # 胜平负概率
         home_win_prob = 1 - norm.cdf(0, loc=spread, scale=STD_DEV_SPREAD)
         away_win_prob = 1 - home_win_prob
+        
+        # 大小分概率 (相对于 225.5 基准)
         over_prob = 1 - norm.cdf(MARKET_TOTAL_LINE, loc=total, scale=STD_DEV_TOTAL)
         
+        # 👇 核心修复：把胜分差区间算回来
+        abs_spread = abs(spread)
+        prob_1_5 = norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(0, loc=abs_spread, scale=STD_DEV_SPREAD)
+        prob_6_10 = norm.cdf(10, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD)
+        prob_11_15 = norm.cdf(15, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(10, loc=abs_spread, scale=STD_DEV_SPREAD)
+
         win_team = home['name'] if spread > 0 else away['name']
 
         md += f"【{home['name']}(主) vs {away['name']}(客)】\n"
@@ -192,7 +199,8 @@ def main():
             md += f"⚖️ 理论让分：{win_team} -{abs(spread):.1f}\n"
             
         md += f"📈 理论总分：{total:.1f} 分 (请对比体彩盘口)\n"
-        md += f"🎯 胜负概率：主胜 {home_win_prob:.1%} | 客胜 {away_win_prob:.1%}\n\n"
+        md += f"🎯 胜负概率：主胜 {home_win_prob:.1%} | 客胜 {away_win_prob:.1%}\n"
+        md += f"🔮 分差区间：{win_team}赢 1-5分({prob_1_5:.1%}) | 6-10分({prob_6_10:.1%}) | 11-15分({prob_11_15:.1%})\n\n"
 
         results_to_save.append({
             "home": home_abbr, "away": away_abbr,

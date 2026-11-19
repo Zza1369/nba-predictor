@@ -22,6 +22,11 @@ TEAM_CN = {
     "OKC": "雷霆", "UTA": "爵士", "WAS": "奇才", "TOR": "猛龙", "MEM": "灰熊", "CHA": "黄蜂"
 }
 
+# 兼容 ESPN 的特殊缩写 (比如它可能用 NY 代替 NYK, GS 代替 GSW)
+ESPN_ABBR_MAP = {
+    "NY": "NYK", "GS": "GSW", "SA": "SAS", "NO": "NOP", "UTAH": "UTA", "WSH": "WAS", "PHO": "PHX"
+}
+
 STD_DEV_SPREAD = 12.5
 STD_DEV_TOTAL = 18.0
 MARKET_TOTAL_LINE = 225.5
@@ -51,7 +56,6 @@ def get_team_stat(team_abbr):
         return None
 
 def get_actual_results(date_str):
-    """拉取指定日期的完赛赛果（过滤未打完的 0-0）"""
     fmt_date = date_str.replace("-", "")
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={fmt_date}"
     results = {}
@@ -61,7 +65,7 @@ def get_actual_results(date_str):
         for ev in events:
             comp = ev.get("competitions", [])[0]
             
-            # 核心判断：必须完赛
+            # 必须完赛
             status = comp.get("status", {})
             if not status.get("type", {}).get("completed", False):
                 continue
@@ -73,15 +77,19 @@ def get_actual_results(date_str):
                 if home and away and "score" in home and "score" in away:
                     h_score = int(home["score"])
                     a_score = int(away["score"])
+                    
+                    # 核心修复：清洗 ESPN 的缩写，对齐我们的标准缩写
                     h_abbr = home["team"]["abbreviation"]
                     a_abbr = away["team"]["abbreviation"]
+                    h_abbr = ESPN_ABBR_MAP.get(h_abbr, h_abbr)
+                    a_abbr = ESPN_ABBR_MAP.get(a_abbr, a_abbr)
+                    
                     results[f"{h_abbr}||{a_abbr}"] = (h_score, a_score)
     except Exception:
         pass
     return results
 
 def get_performance_report():
-    """生成 NBA 历史战绩（跨日回溯）"""
     pred_files = sorted(glob.glob("nba_predictions_*.csv"))
     if not pred_files:
         return "📊 历史战绩：暂无记录 (等待第一场比赛结算)\n"
@@ -96,6 +104,7 @@ def get_performance_report():
             pred_date = datetime.strptime(date_str, "%Y-%m-%d")
             df = pd.read_csv(f, encoding="utf-8-sig")
             
+            # 向前查1天，向后查2天（应对中美时差）
             actuals = {}
             for i in range(3):
                 check_date = (pred_date + timedelta(days=i)).strftime("%Y-%m-%d")
@@ -175,14 +184,10 @@ def main():
         spread = home_expected - away_expected
         total = home_expected + away_expected
 
-        # 胜平负概率
         home_win_prob = 1 - norm.cdf(0, loc=spread, scale=STD_DEV_SPREAD)
         away_win_prob = 1 - home_win_prob
-        
-        # 大小分概率 (相对于 225.5 基准)
         over_prob = 1 - norm.cdf(MARKET_TOTAL_LINE, loc=total, scale=STD_DEV_TOTAL)
         
-        # 👇 核心修复：把胜分差区间算回来
         abs_spread = abs(spread)
         prob_1_5 = norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(0, loc=abs_spread, scale=STD_DEV_SPREAD)
         prob_6_10 = norm.cdf(10, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD)

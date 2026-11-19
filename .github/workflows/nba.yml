@@ -2,20 +2,33 @@ name: NBA Predictions
 
 on:
   schedule:
-    - cron: '0 4 * * *' # UTC 4点 = 北京时间 中午 12 点
+    - cron: '0 4 * * *' # 每天北京时间中午 12 点自动跑
   workflow_dispatch:
 
 jobs:
   nba_predict:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 赋予写入权限
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
+      
       - name: Run NBA Predict
         env:
           TZ: Asia/Shanghai
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
         run: python nba_predict.py
+        
+      # 👇 核心修复：把生成的预测文件自动提交到仓库里！
+      - name: Commit and push results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nba_predictions_*.csv
+          git diff --staged --quiet || git commit -m "Auto-save NBA predictions $(date -u +%Y-%m-%d)"
+          git push

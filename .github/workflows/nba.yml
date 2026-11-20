@@ -2,7 +2,7 @@ name: NBA Predictions
 
 on:
   schedule:
-    - cron: '0 4 * * *' # 每天北京时间中午 12 点自动跑
+    - cron: '0 7 * * *'
   workflow_dispatch:
 
 jobs:

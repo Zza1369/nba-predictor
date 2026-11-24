@@ -2,7 +2,7 @@ name: NBA Predictions
 
 on:
   schedule:
-    - cron: '0 7 * * *'
+    - cron: '0 7 * * *' # 每天北京时间下午 3 点自动跑
   workflow_dispatch:
 
 jobs:
@@ -22,9 +22,10 @@ jobs:
         env:
           TZ: Asia/Shanghai
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}  # 👈 就是这一行，千万别漏了
         run: python nba_predict.py
         
-      # 👇 核心修复：把生成的预测文件自动提交到仓库里！
+      # 核心修复：把生成的预测文件自动提交到仓库里！
       - name: Commit and push results
         run: |
           git config user.name "github-actions[bot]"

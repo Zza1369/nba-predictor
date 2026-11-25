@@ -221,13 +221,17 @@ def main():
         # 大小分概率计算 (根据真实盘口 line 或 默认 225.5)
         cur_total_line = match["total_line"] if match["total_line"] else MARKET_TOTAL_LINE
         over_prob = 1 - norm.cdf(cur_total_line, loc=total, scale=STD_DEV_TOTAL)
-        
+                # 计算分差区间
+        abs_spread = abs(spread)
+        prob_1_5 = norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(0, loc=abs_spread, scale=STD_DEV_SPREAD)
+        prob_6_10 = norm.cdf(10, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD)
+        prob_11_15 = norm.cdf(15, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(10, loc=abs_spread, scale=STD_DEV_SPREAD)
         win_team = home['name'] if spread > 0 else away['name']
 
         md += f"【{home['name']}(主) vs {away['name']}(客)】\n"
         md += f"📊 预期比分：{home_expected:.1f} - {away_expected:.1f} | 理论让分：{win_team} -{abs(spread):.1f}\n"
         md += f"📈 理论总分：{total:.1f} 分 (体彩盘口: {cur_total_line})\n"
-
+        md += f"🔮 分差区间：{win_team}赢 1-5分({prob_1_5:.1%}) | 6-10分({prob_6_10:.1%}) | 11-15分({prob_11_15:.1%})\n"
         # 👇 核心：如果有 API 赔率，计算 EV 和 凯利
         oh, oa = match["odds_h"], match["odds_a"]
         if oh and oa:

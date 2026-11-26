@@ -8,7 +8,7 @@ from scipy.stats import norm
 FIXTURES_CSV = "nba_fixtures.csv"
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# 球队 ID 与 全称映射 (用于从 ESPN 抓数据和匹配 Odds API)
+# 球队 ID 与 全称映射
 TEAM_IDS = {
     "ATL": 1, "BOS": 2, "NOP": 3, "CHI": 4, "CLE": 5, "DAL": 6, "DEN": 7, "DET": 8, 
     "GSW": 9, "HOU": 10, "IND": 11, "LAC": 12, "LAL": 13, "MIA": 14, "MIL": 15, "MIN": 16, 
@@ -38,7 +38,6 @@ ABBR_TO_FULL = {
 
 STD_DEV_SPREAD = 12.5
 STD_DEV_TOTAL = 18.0
-MARKET_TOTAL_LINE = 225.5 # 用作对比的基准线
 
 def push_to_wechat(md_text):
     key = os.environ.get("SERVERCHAN_KEY")
@@ -47,27 +46,6 @@ def push_to_wechat(md_text):
         requests.post(f"https://sctapi.ftqq.com/{key}.send", data={"title": f"🏀 NBA量化与战绩 {datetime.now().strftime('%m月%d日')}", "desp": md_text}, timeout=10)
     except Exception as e:
         print(f"微信异常: {e}")
-
-def fetch_nba_odds():
-    """从 The Odds API 抓取 NBA 赛程与赔率"""
-    if not ODDS_API_KEY:
-        print("⚠️ 未配置 ODDS_API_KEY")
-        return []
-    
-    print("正在从 The Odds API 获取 NBA 赔率...")
-    url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/odds/"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "regions": "us", # 美国盘口
-        "markets": "h2h,spreads,totals", # 胜负、让分、大小分
-        "oddsFormat": "decimal"
-    }
-    try:
-        r = requests.get(url, params=params, timeout=15)
-        if r.status_code != 200: return []
-        return r.json()
-    except:
-        return []
 
 def get_team_stat(team_abbr):
     team_id = TEAM_IDS.get(team_abbr.upper())
@@ -84,6 +62,36 @@ def get_team_stat(team_abbr):
         return {"name": TEAM_CN.get(team_abbr.upper(), team_abbr), "ppg": ppg, "opp_ppg": opp_ppg}
     except Exception:
         return None
+
+def get_api_odds_for_fixture(h_abbr, a_abbr):
+    """从 The Odds API 获取指定场次的真实赔率与大小分盘口"""
+    if not ODDS_API_KEY: return None
+    
+    h_full = ABBR_TO_FULL.get(h_abbr.upper(), h_abbr)
+    a_full = ABBR_TO_FULL.get(a_abbr.upper(), a_abbr)
+
+    params = {"apiKey": ODDS_API_KEY, "regions": "us", "markets": "h2h,totals", "oddsFormat": "decimal"}
+    try:
+        r = requests.get(f"https://api.the-odds-api.com/v4/sports/basketball_nba/odds/", params=params, timeout=10)
+        if r.status_code != 200: return None
+        matches = r.json()
+        for m in matches:
+            if (h_full.lower() in m["home_team"].lower() or m["home_team"].lower() in h_full.lower()) and \
+               (a_full.lower() in m["away_team"].lower() or m["away_team"].lower() in a_full.lower()):
+                
+                res = {"h2h": {}, "totals": {}}
+                for b in m.get("bookmakers", []):
+                    if b["key"] in ["pinnacle", "draftkings", "fanduel"]:
+                        for market in b.get("markets", []):
+                            if market["key"] == "h2h":
+                                for out in market["outcomes"]:
+                                    if out["name"] == m["home_team"]: res["h2h"]["h"] = out["price"]
+                                    elif out["name"] == m["away_team"]: res["h2h"]["a"] = out["price"]
+                            elif market["key"] == "totals":
+                                res["totals"]["line"] = market["outcomes"][0].get("point")
+                        if res["h2h"]: return res
+    except Exception: pass
+    return None
 
 def get_actual_results(date_str):
     fmt_date = date_str.replace("-", "")
@@ -103,7 +111,7 @@ def get_actual_results(date_str):
                 if home and away and "score" in home and "score" in away:
                     h_score, a_score = int(home["score"]), int(away["score"])
                     results[f"{home['team']['abbreviation']}||{away['team']['abbreviation']}"] = (h_score, a_score)
-    except: pass
+    except Exception: pass
     return results
 
 def get_performance_report():
@@ -120,7 +128,7 @@ def get_performance_report():
             pred_date = datetime.strptime(date_str, "%Y-%m-%d")
             df = pd.read_csv(f, encoding="utf-8-sig")
             actuals = {}
-            for i in range(3): # 跨3天查赛果
+            for i in range(3):
                 check_date = (pred_date + timedelta(days=i)).strftime("%Y-%m-%d")
                 actuals.update(get_actual_results(check_date))
             
@@ -141,7 +149,7 @@ def get_performance_report():
                     if ou_ok: ou_hits += 1
                     seen_matches.add(key)
                     details.append({"match": f"{TEAM_CN.get(h, h)} vs {TEAM_CN.get(a, a)}", "act": f"{act_h}-{act_a}", "win": win_ok, "ou": ou_ok})
-        except: pass
+        except Exception: pass
 
     md = "📊 NBA 历史战绩统计\n"
     if total > 0:
@@ -153,59 +161,31 @@ def get_performance_report():
     return md
 
 def main():
-    # 1. 获取比赛和赔率
-    odds_data = fetch_nba_odds()
-    
-    # 如果你在本地测试，可以没 API，就用本地 fixtures.csv
-    if not odds_data:
-        print("未获取到 API 赔率，回退到本地 fixtures.csv...")
-        try:
-            fixtures = pd.read_csv(FIXTURES_CSV, encoding="utf-8-sig")
-        except:
-            print("找不到 nba_fixtures.csv")
-            return
-        matches_to_run = []
-        for _, row in fixtures.iterrows():
-            matches_to_run.append({
-                "home_abbr": str(row['home']).strip().upper(),
-                "away_abbr": str(row['away']).strip().upper(),
-                "odds_h": None, "odds_a": None, "total_line": None
-            })
-    else:
-        print(f"成功获取 {len(odds_data)} 场带赔率的 NBA 比赛！")
-        matches_to_run = []
-        for m in odds_data:
-            h_full, a_full = m["home_team"], m["away_team"]
-            h_abbr = next((k for k, v in ABBR_TO_FULL.items() if v == h_full), None)
-            a_abbr = next((k for k, v in ABBR_TO_FULL.items() if v == a_full), None)
-            
-            if not h_abbr or not a_abbr: continue
-            
-            oh, oa, total_line = None, None, None
-            # 提取 Pinnacle 或首选庄家的赔率
-            for b in m.get("bookmakers", []):
-                if b["key"] == "pinnacle":
-                    for market in b.get("markets", []):
-                        if market["key"] == "h2h":
-                            for out in market["outcomes"]:
-                                if out["name"] == h_full: oh = out["price"]
-                                if out["name"] == a_full: oa = out["price"]
-                        if market["key"] == "totals":
-                            total_line = market["outcomes"][0].get("point") # 大小分基准线
-                    if oh: break # 抓到一个庄家就够
-            
-            matches_to_run.append({
-                "home_abbr": h_abbr, "away_abbr": a_abbr,
-                "odds_h": oh, "odds_a": oa, "total_line": total_line
-            })
+    try:
+        fixtures = pd.read_csv(FIXTURES_CSV, encoding="utf-8-sig")
+    except:
+        print("找不到 nba_fixtures.csv")
+        return
 
     md = f"🏀 NBA 量化预测 ({datetime.now().strftime('%m-%d')})\n\n"
     results_to_save = []
 
-    for match in matches_to_run:
-        h_abbr, a_abbr = match["home_abbr"], match["away_abbr"]
-        home, away = get_team_stat(h_abbr), get_team_stat(a_abbr)
+    for _, row in fixtures.iterrows():
+        h_abbr = str(row['home']).strip().upper()
+        a_abbr = str(row['away']).strip().upper()
+        
+        home = get_team_stat(h_abbr)
+        away = get_team_stat(a_abbr)
         if not home or not away: continue
+
+        # 获取真实 API 赔率
+        api_data = get_api_odds_for_fixture(h_abbr, a_abbr)
+        if api_data and "h" in api_data["h2h"]:
+            oh = api_data["h2h"]["h"]
+            oa = api_data["h2h"]["a"]
+            total_line = api_data.get("totals", {}).get("line", 225.5)
+        else:
+            oh, oa, total_line = None, None, 225.5
 
         # 计算预期得分
         home_expected = (home['ppg'] + away['opp_ppg']) / 2 + 2.5
@@ -214,39 +194,37 @@ def main():
         spread = home_expected - away_expected
         total = home_expected + away_expected
 
-        # 核心概率计算
+        # 核心概率
         home_win_prob = 1 - norm.cdf(0, loc=spread, scale=STD_DEV_SPREAD)
         away_win_prob = 1 - home_win_prob
+        over_prob = 1 - norm.cdf(total_line, loc=total, scale=STD_DEV_TOTAL)
         
-        # 大小分概率计算 (根据真实盘口 line 或 默认 225.5)
-        cur_total_line = match["total_line"] if match["total_line"] else MARKET_TOTAL_LINE
-        over_prob = 1 - norm.cdf(cur_total_line, loc=total, scale=STD_DEV_TOTAL)
-                # 计算分差区间
         abs_spread = abs(spread)
         prob_1_5 = norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(0, loc=abs_spread, scale=STD_DEV_SPREAD)
         prob_6_10 = norm.cdf(10, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(5, loc=abs_spread, scale=STD_DEV_SPREAD)
         prob_11_15 = norm.cdf(15, loc=abs_spread, scale=STD_DEV_SPREAD) - norm.cdf(10, loc=abs_spread, scale=STD_DEV_SPREAD)
+
         win_team = home['name'] if spread > 0 else away['name']
 
         md += f"【{home['name']}(主) vs {away['name']}(客)】\n"
         md += f"📊 预期比分：{home_expected:.1f} - {away_expected:.1f} | 理论让分：{win_team} -{abs(spread):.1f}\n"
-        md += f"📈 理论总分：{total:.1f} 分 (体彩盘口: {cur_total_line})\n"
-        md += f"🔮 分差区间：{win_team}赢 1-5分({prob_1_5:.1%}) | 6-10分({prob_6_10:.1%}) | 11-15分({prob_11_15:.1%})\n"
-        # 👇 核心：如果有 API 赔率，计算 EV 和 凯利
-        oh, oa = match["odds_h"], match["odds_a"]
+        md += f"📈 理论总分：{total:.1f} 分 (盘口: {total_line})\n"
+
+        # 如果有 API 赔率，计算 EV 和 凯利
         if oh and oa:
             ev_h = (home_win_prob * oh) - 1
             ev_a = (away_win_prob * oa) - 1
-            kelly_h = max(0, ((home_win_prob * oh - 1) / (oh - 1)) * 0.5)
-            kelly_a = max(0, ((away_win_prob * oa - 1) / (oa - 1)) * 0.5)
+            kelly_h = max(0, ((home_win_prob * oh - 1) / (oh - 1)) * 0.5) if oh > 1 else 0
+            kelly_a = max(0, ((away_win_prob * oa - 1) / (oa - 1)) * 0.5) if oa > 1 else 0
 
-            if ev_h > 0.05: md += f"🔥 **主胜EV +{ev_h:.1%} (建议凯利仓位 {kelly_h:.1%})**\n"
-            if ev_a > 0.05: md += f"🔥 **客胜EV +{ev_a:.1%} (建议凯利仓位 {kelly_a:.1%})**\n"
+            if ev_h > 0.05: md += f"🔥 **主胜EV +{ev_h:.1%} (凯利 {kelly_h:.1%})**\n"
+            if ev_a > 0.05: md += f"🔥 **客胜EV +{ev_a:.1%} (凯利 {kelly_a:.1%})**\n"
             
             md += f"🎯 胜负概率：主胜 {home_win_prob:.1%} | 客胜 {away_win_prob:.1%}\n"
         else:
             md += f"💡 纯数据：主胜 {home_win_prob:.1%} | 客胜 {away_win_prob:.1%}\n"
             
+        md += f"🔮 分差区间：{win_team}赢 1-5分({prob_1_5:.1%}) | 6-10分({prob_6_10:.1%}) | 11-15分({prob_11_15:.1%})\n"
         md += f"🥅 大小概率：大 {over_prob:.1%} | 小 {1-over_prob:.1%}\n\n"
 
         results_to_save.append({"home": h_abbr, "away": a_abbr, "pred_h": home_expected, "pred_a": away_expected})

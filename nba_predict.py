@@ -151,11 +151,12 @@ def get_performance_report():
                     details.append({"match": f"{TEAM_CN.get(h, h)} vs {TEAM_CN.get(a, a)}", "act": f"{act_h}-{act_a}", "win": win_ok, "ou": ou_ok})
         except Exception: pass
 
-    md = "📊 NBA 历史战绩统计\n"
+        md = "📊 NBA 历史战绩统计\n"
     if total > 0:
         md += f"已结算 {total} 场 | 🎯 胜负: {win_hits/total:.1%} | 📈 大小: {ou_hits/total:.1%}\n\n"
         for d in details[-3:]:
-            md += f"🔸 {d['match']} (实际 {d['act']}) | 胜负{'✅' if d['win'] else '❌'} | 大小{'✅' if d['ou'] else '❌'}\n"
+            md += f"🔸 {d['match']} (实际 {d['act']})\n"
+            md += f"   └ 胜负{'✅' if d['win'] else '❌'} | 大小{'✅' if d['ou'] else '❌'}\n"
     else:
         md += "暂无已结算的比赛。\n"
     return md
